@@ -725,7 +725,7 @@ class Database {
 /*!********************!*\
   !*** ./src/env.js ***!
   \********************/
-/*! exports provided: isPageEnv, isSwEnv, isWorkerEnv, setInfo, getInfo, global, init */
+/*! exports provided: isPageEnv, isSwEnv, isWorkerEnv, setInfo, getInfo, global, getPostMessageProxy, init */
 /***/ (function(module, __webpack_exports__, __webpack_require__) {
 
 "use strict";
@@ -736,6 +736,7 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "setInfo", function() { return setInfo; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "getInfo", function() { return getInfo; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "global", function() { return global; });
+/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "getPostMessageProxy", function() { return getPostMessageProxy; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "init", function() { return init; });
 const ENV_PAGE = 1
 const ENV_WORKER = 2
@@ -756,15 +757,14 @@ function isWorkerEnv() {
 }
 
 /**
- * @type {WeakMap<Object, {loc: Location, doc: Document, ori: URL, domHook: object}>}
+ * @type {WeakMap<Object, {loc: Location, doc: Document, ori: URL, --(未用)domHook: object}>}
  */
 //const objInfoMap = new WeakMap()
 //目前只有一个全局信息, 所以步需要Map;
 //不要设置为{}
 let _info;
 
-
-//目前仅在Page的环境下使用, 里面只有一个值, key为window.Function, 值为{loc: Location, doc: Document, ori: URL, domHook: object}
+//目前仅在Page的环境下使用, 里面只有一个值, key为window.Function, 值为{loc: Location, doc: Document, ori: URL, --(未用)domHook: object}
 //WeakMap必须以对象为键, 当key在其它处引用为0时, 对象会被回收, WeakMap中的key做为引用不一定消失,
 //但外部已经没有了该对象的引用, 所以已经无法从WeakMap中用该key获取值了, 而且WeakMap也是不可遍历的,
 //所以当对象被回收后, WeakMap中的项可能还在, key是对象的引用, 但对象已被回收, 所以该引用只是类似于野指针/无效指针的意思, 但如果项未消失, 但值中确有强引用?
@@ -786,6 +786,52 @@ function getInfo() {
 }
 
 let global = self;
+
+//https://github.com/tvcutsem/harmony-reflect/issues/39
+//https://exploringjs.com/es6/ch_proxies.html
+let _postMessageHandler = {
+    get: function (target, name, receiver) {
+        if (name === "postMessage") {
+          return function(message, origin) {
+             if (origin && origin !== "*") {
+                arguments[1] = "*";
+            }
+
+            //或target.postMessage.apply(target, arguments)
+            return Reflect.apply(target.postMessage, target, arguments)
+          };
+        }
+        else if (name === "__Target") {
+            return target;
+        }
+        else {
+            return Reflect.get(target, name, receiver);
+        }
+    }
+};
+
+const crossOriginWinMap = new WeakMap()
+
+//?目前都是将Window对象替换为Proxy对象来实现的PostMessage, 能否不替换对象?
+//如果不替换对象, 则需这种办法需要替换脚本, 但兼容性好.
+//例如window.parent.postMessage(替换为get_it_p(window.parent).postMessage, 在get_it_p()中返回getPostMessageProxy(window.parent),
+//postMessage的实现: third_party/blink/renderer/core/frame/dom_window.cc
+//third_party/blink/renderer/bindings/core/v8/custom/v8_window_custom.cc,
+//NamedPropertyGetterCustom函数中就是contentWindow/parent等window对象访问的起点, 从该函数可以看出, 可以在跨域的情况下访问win.then/win["then"]
+//下面两个标准说明了具体可以访问的跨域属性
+//https://html.spec.whatwg.org/multipage/browsers.html#crossorigingetownpropertyhelper-(-o,-p-)
+//https://html.spec.whatwg.org/multipage/browsers.html#crossoriginproperties-(-o-)
+//https://html.spec.whatwg.org/multipage/browsers.html#crossoriginpropertydescriptormap
+function getPostMessageProxy(obj) {
+  let wp = crossOriginWinMap.get(obj);
+
+  if(!wp) {
+    wp = new Proxy(obj, _postMessageHandler);
+    crossOriginWinMap.set(obj, wp);
+  }
+
+  return wp;
+}
 
 function init() {
     console.log("env.init, global constructor: " + global.constructor.name + " href:" + global.location.href)
@@ -1013,13 +1059,12 @@ function createFakeLoc(global) {
 /*!*********************!*\
   !*** ./src/hook.js ***!
   \*********************/
-/*! exports provided: DROP, REMOVE, func, prop, createDomHook */
+/*! exports provided: DROP, func, prop, createDomHook */
 /***/ (function(module, __webpack_exports__, __webpack_require__) {
 
 "use strict";
 __webpack_require__.r(__webpack_exports__);
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "DROP", function() { return DROP; });
-/* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "REMOVE", function() { return REMOVE; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "func", function() { return func; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "prop", function() { return prop; });
 /* harmony export (binding) */ __webpack_require__.d(__webpack_exports__, "createDomHook", function() { return createDomHook; });
@@ -1031,7 +1076,8 @@ const {
 
 
 const DROP = {}
-const REMOVE = {}
+//现已用不到
+//export const REMOVE = {}
 
 /**
  * hook function
@@ -1118,8 +1164,8 @@ function createDomHook(win) {
 
   const tagAttrHandlersMap = {}
   const tagTextHandlerMap = {}
-  const tagKeySetMap = {}
-  const tagKeyGetMap = {}
+  //const tagKeySetMap = {}
+  //const tagKeyGetMap = {}
 
   /**
    * @param {string} tag 
@@ -1128,10 +1174,10 @@ function createDomHook(win) {
    */
   function attr(tag, proto, ...handlers) {
     /** @type {boolean} */
-    let hasBind
+    let needBind
 
     /** @type {boolean} */
-    let hasAttr
+    //let hasAttr
     
     let keySetMap
     let keyGetMap
@@ -1155,67 +1201,73 @@ function createDomHook(win) {
       // attribute
       if (tagAttrHandlersMap[tag]) {
         tagAttrHandlersMap[tag].push(v)
-        hasBind = true
       } else {
+        needBind = true;
         tagAttrHandlersMap[tag] = [v]
-        tagKeySetMap[tag] = {}
-        tagKeyGetMap[tag] = {}
+        //tagKeySetMap[tag] = {}
+        //tagKeyGetMap[tag] = {}
       }
 
-      if (!keySetMap) {
-        keySetMap = tagKeySetMap[tag]
-        keyGetMap = tagKeyGetMap[tag]
-      }
-      const key = v.name.toLocaleLowerCase()
-      keySetMap[key] = v.onset
-      keyGetMap[key] = v.onget
-      hasAttr = true
+      //if (!keySetMap) {
+      //  keySetMap = tagKeySetMap[tag]
+      //  keyGetMap = tagKeyGetMap[tag]
+      //}
+      //const key = v.name.toLocaleLowerCase()
+      //keySetMap[key] = v.onset
+      //keyGetMap[key] = v.onget
+      ////hasAttr = true
     })
 
-    if (hasBind || !hasAttr) {
+    //hasBind为true表示后面的已经设置过了, 只需要添加了keySetMap/keyGetMap中的值即可
+    //hasAttrk可以用Object.keys(keySetMap).length===0来替代
+    //下面的判断并不准确
+    //if (hasBind || !hasAttr) {
+    if (!needBind) {
       return
     }
 
     // 如果之前调用过 setAttribute，直接返回上次设置的值；
     // 如果没有调用过，则返回 onget 的回调值。
     func(proto, 'getAttribute', oldFn => function(name) {
-      const key = (name + '').toLocaleLowerCase()
+      //const key = (name + '').toLocaleLowerCase()
+      //
+      //const onget = keyGetMap[key]
+      //if (!onget) {
+      //  return apply(oldFn, this, arguments)
+      //}
+      //
+      //const lastVal = this['_k' + key]
+      //if (lastVal !== undefined) {
+      //  return lastVal
+      //}
+      //const val = apply(oldFn, this, arguments)
+      //return onget.call(this, val)
 
-      const onget = keyGetMap[key]
-      if (!onget) {
-        return apply(oldFn, this, arguments)
-      }
-
-      const lastVal = this['_k' + key]
-      if (lastVal !== undefined) {
-        return lastVal
-      }
-      const val = apply(oldFn, this, arguments)
-      return onget.call(this, val)
+      return this[name];
     })
 
     func(proto, 'setAttribute', oldFn => function(name, val) {
-      const key = (name + '').toLocaleLowerCase()
-      const onset = keySetMap[key]
-      if (onset) {
-        this['_k' + key] = val
+      //const key = (name + '').toLocaleLowerCase()
+      //const onset = keySetMap[key]
+      //if (onset) {
+      //  this['_k' + key] = val
+      //
+      //  const ret = onset.call(this, val)
+      //  if (ret === DROP) {
+      //    return
+      //  }
+      //  arguments[1] = ret
+      //}
+      //return apply(oldFn, this, arguments)
 
-        const ret = onset.call(this, val)
-        if (ret === DROP) {
-          return
-        }
-        arguments[1] = ret
-      }
-      return apply(oldFn, this, arguments)
+      this[name] = val;
     })
 
-    func(proto, 'setAttributeNode', oldFn => function(node) {
-      console.warn('setAttributeNode:', node, this)
-      // TODO:
-      return apply(oldFn, this, arguments)
-    })
-
-    // ...
+    //func(proto, 'setAttributeNode', oldFn => function(node) {
+    //  console.warn('setAttributeNode:', node, this)
+    //  // TODO:
+    //  return apply(oldFn, this, arguments)
+    //})
   }
 
   /**
@@ -1226,11 +1278,14 @@ function createDomHook(win) {
   function parseNewTextNode(node, handler, elem) {
 // console.log('parseTextNode')
     const val = node.nodeValue
-    const ret = handler.onset.call(elem, val, true)
-    if (ret === DROP) {
-      return
-    }
-    node.nodeValue = ret
+    //const ret = handler.onset.call(elem, val, true)
+    //if (ret === DROP) {
+    //  return
+    //}
+    //node.nodeValue = ret
+
+    //注意elem是node的父节点, node是#text节点
+    elem.innerText = val;
   }
 
   /**
@@ -1243,17 +1298,19 @@ function createDomHook(win) {
       return
     }
     const val = rawGetAttr.call(elem, name)
-    const ret = handler.onset.call(elem, val, true)
+    //const ret = handler.onset.call(elem, val, true)
+    //
+    ////if (ret === REMOVE) {
+    ////  elem.removeAttribute(name)
+    ////  return
+    ////}
+    //
+    //if (ret === DROP) {
+    //  return
+    //}
+    //rawSetAttr.call(elem, name, ret)
 
-    if (ret === REMOVE) {
-      elem.removeAttribute(name)
-      return
-    }
-
-    if (ret === DROP) {
-      return
-    }
-    rawSetAttr.call(elem, name, ret)
+    elem[name] = val;
   }
 
   
@@ -1450,7 +1507,11 @@ var e=location.search window.location
 E&&E.location&&
 location:fdafda; location = fdafda
 */
-  //??.和(操作符的前后都可以有不限的空白, 暂未考虑, 结尾不能包括:, 因为这可能是属性名, 也不能包括=(但可以包括==), 因这是左操作符.
+  //??.和(操作符的前后都可以有不限的空白, 暂未考虑, 结尾不能包括:, 因为这可能是属性名,
+  //结尾也不能包括=(但可以包括==), 因这是左操作符, 这点无需考虑, 因为原始的location也不能放在左边, 在这种情况不用替换, 让原始location进行操作
+  //参考https://stackoverflow.com/questions/2008279/validate-a-javascript-function-name,
+  //其实$也可以放到名字当中, 函数调用返回的对象也可以做为.location的前缀, 所以下面的正则表达式还是有不少问题.
+  //可以给Object原型增加一个函数__loc = function() { return proxy; }, 然后在所有location后加.__loc()调用来替换, 这比前替换准确些.
   //([A-Za-z0-9_\.]+\.|\b)location($|\s+|\.|\)|,|;|&)  ([\w\.]+\.|\b)location\s*($|\.|\)|,|;|&)
   code = code.replace(/([A-Za-z0-9_\.]+\.|\b)location($|\s+|\.|\)|,|;|&)/g, (_, $1, $2) => {
       //match = true
@@ -2422,7 +2483,7 @@ function init() {
     loc: location,
     doc: document,
     ori: oriUrlObj, //源站url
-    domHook,
+    //domHook, //未用
   })
 
   // hook 页面和 Worker 相同的 API
@@ -2849,100 +2910,101 @@ origin '${srcUrlObj.origin}' and URL '${srcUrlStr}'.`
 
   //跨域交互postMessage的第二个参数的处理
   function initCrossOrigin() {
-      //https://www.twitch.tv/的嵌入iframe src="https://jp.mlb.workers.dev/-----https://cdn-gl.imrworldwide.com/novms/html/ls.html" 曾出现过如下错误: 
-      //Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('<URL>') does not match the recipient window's origin ('<URL>').
-      //是由如下语句引起的, 最后传递了window.document.referrer, 而非*:
-      //window.parent.postMessage({ nolSentFromLs: true, key: evt.key, type: 'lsbroadcast', newValue: evt.newValue, oldValue: evt.oldValue }, (window.document.referrer ? window.document.referrer : '*'));
-      //有三种方式解决, 1. 如下面的那样, hook postMessage, 在第二个参数传递*, 但问题在于只对window自身有效, 对子iframe来说, 通过window.parent来调用仍然是原始函数, 在非窗口的修改并不能传递到iframe,
-      // 2. hook parent的postMessage, 但这会出错, 因为无法修改跨域的对象.
-      // 3. 如下这样prop referrer, 返回 "", 但这只对上述特殊代码有效
-      // 4. 用正则表达式替换脚本.
+    //https://www.twitch.tv/的嵌入iframe src="https://jp.mlb.workers.dev/-----https://cdn-gl.imrworldwide.com/novms/html/ls.html" 曾出现过如下错误: 
+    //Failed to execute 'postMessage' on 'DOMWindow': The target origin provided ('<URL>') does not match the recipient window's origin ('<URL>').
+    //是由如下语句引起的, 最后传递了window.document.referrer, 而非*:
+    //window.parent.postMessage({ nolSentFromLs: true, key: evt.key, type: 'lsbroadcast', newValue: evt.newValue, oldValue: evt.oldValue }, (window.document.referrer ? window.document.referrer : '*'));
+    //有三种方式解决, 1. 如下面的那样, hook postMessage, 在第二个参数传递*, 但问题在于只对window自身有效, 对子iframe来说, 通过window.parent来调用仍然是原始函数, 在非窗口的修改并不能传递到iframe,
+    // 2. hook parent的postMessage, 但这会出错, 因为无法修改跨域的对象.
+    // 3. 如下这样prop referrer, 返回 "", 但这只对上述特殊代码有效
+    // 4. 用正则表达式替换脚本.
 
-      //该修改通用性差
-      //function getReferrer(getter) {
-      //    return function() {
-      //      return "";
-      //    }
-      //}
-      //hook.prop(docProto, 'referrer', getUriHook)
+    //该修改通用性差
+    //function getReferrer(getter) {
+    //    return function() {
+    //      return "";
+    //    }
+    //}
+    //hook.prop(docProto, 'referrer', getUriHook)
 
-      //??parent和所有新加的iframe也要处理
-      //该修改未完全替换, 用下面的代理实现
-      //__parent = global.parent;
-      //global.parent = {
-      //    postMessage: function (message, origin) {
-      //    if (origin && origin !== "*") {
-      //        arguments[1] = "*"
-      //    }
-      //
-      //    let par = __parent;
-      //    return apply(par.postMessage, par, arguments)
-      //}}
+    //??parent和所有新加的iframe也要处理
+    //该修改未完全替换, 用下面的代理实现
+    //__parent = global.parent;
+    //global.parent = {
+    //    postMessage: function (message, origin) {
+    //    if (origin && origin !== "*") {
+    //        arguments[1] = "*"
+    //    }
+    //
+    //    let par = __parent;
+    //    return apply(par.postMessage, par, arguments)
+    //}}
 
-      //https://github.com/tvcutsem/harmony-reflect/issues/39
-      //https://exploringjs.com/es6/ch_proxies.html
-      let postMessageHandler = {
-          get: function (target, name, receiver) {
-              if (name === "postMessage") {
-                return function(message, origin) {
-                   if (origin && origin !== "*") {
-                      arguments[1] = "*";
-                  }
+    //这个判断是为了避免循环调用, 如果放在page.js中需要该判断, 这里步需要
+    //?下面的修改能解决问题, 但导致 while ((p = p.parent) !== top) 死循环
+    //if(__parent === undefined) {
+    //if(global.parent) {
+        global.parent = _env_js__WEBPACK_IMPORTED_MODULE_0__["getPostMessageProxy"](global.parent);
+    //}
 
-                  //或target.postMessage.apply(target, arguments)
-                  return Reflect.apply(target.postMessage, target, arguments)
-                };
-              }
-              else if (name === "__Target") {
-                  return target;
-              }
-              else {
-                  return Reflect.get(target, name, receiver);
-              }
-          }
-      };
+    //下面两种方式都不能在跨域下使用
+    //let des = Object.getOwnPropertyDescriptor(global.parent, "postMessage");
+    //let oldFn = des.value;
+    //des.value = function(message, origin) {
+    //  if (origin && origin !== "*") {
+    //      arguments[1] = "*";
+    //  }
+    //
+    //  return Reflect.apply(oldFn, this, arguments)
+    //};
+    //Object.defineProperty(global.parent, "postMessage", des);
 
-      //这个判断是为了避免循环调用, 如果放在page.js中需要该判断, 这里步需要
-      //?下面的修改能解决问题, 但导致 while ((p = p.parent) !== top) 死循环
-      //if(__parent === undefined) {
-      //if(global.parent) {
-          global.parent = new Proxy(global.parent, postMessageHandler);
-      //}
+    //hook.func(global.parent, "postMessage", oldFn => function(message, origin) {
+    //  if (origin && origin !== "*") {
+    //      arguments[1] = "*";
+    //  }
+    //
+    //  return Reflect.apply(oldFn, this, arguments)
+    //})
 
-      //下面两种方式都不能在跨域下使用
-      //let des = Object.getOwnPropertyDescriptor(global.parent, "postMessage");
-      //let oldFn = des.value;
-      //des.value = function(message, origin) {
-      //  if (origin && origin !== "*") {
-      //      arguments[1] = "*";
-      //  }
-      //
-      //  return Reflect.apply(oldFn, this, arguments)
-      //};
-      //Object.defineProperty(global.parent, "postMessage", des);
+    //下面的调用会提示"Illegal invocation"的错误, 因为跨域判断这里当成了调用函数而不是获取函数本身, 调用contentWindow的上下文this必须在某一具体的iframe中, 而不能以iframeProto为this
+    //而且要代理的是某一具体的contentWindow对象, 而不是contentWindow函数本身
+    //let contentWindowProxy = new Proxy(iframeProto.contentWindow, postMessageHandler);
+    //let contentWindowProxy;
+    //hook.prop(iframeProto, "contentWindow",
+    //  getter => function() {
+    //    if(!contentWindowProxy)
+    //    {
+    //      //这里的this是某一具体的iframe所以可以调用
+    //      let conWin = getter.call(this)
+    //      contentWindowProxy = new Proxy(conWin, postMessageHandler);
+    //    }
+    //
+    //    //主页面与iframe中的初始化无关, 各自独立初始化
+    //    //init()
+    //    return contentWindowProxy;
+    //  }
+    //)
 
-      //hook.func(global.parent, "postMessage", oldFn => function(message, origin) {
-      //  if (origin && origin !== "*") {
-      //      arguments[1] = "*";
-      //  }
-      //
-      //  return Reflect.apply(oldFn, this, arguments)
-      //})
+    //上面的方式共享代理对象是不正确的, 都以第一个iframe的contentWindow来处理信息时不对的
+    //应该每个iframe有自己的代理contentWindow对象
+    _hook_js__WEBPACK_IMPORTED_MODULE_5__["prop"](iframeProto, "contentWindow",
+      getter => function() {
+        //if(!this.__contentWindowProxy){
+        //  this.__contentWindowProxy = new Proxy(getter.call(this), postMessageHandler);
+        //}
+        //
+        //return this.__contentWindowProxy;
 
-      let contentWindowProxy = new Proxy(iframeProto.contentWindow, postMessageHandler);
-      _hook_js__WEBPACK_IMPORTED_MODULE_5__["prop"](iframeProto, 'contentWindow',
-        getter => function() {
-          //if(!contentWindowProxy)
-          //{
-          //  const conWin = getter.call(this)
-          //  contentWindowProxy = new Proxy(conWin, postMessageHandler);
-          //}
+        return _env_js__WEBPACK_IMPORTED_MODULE_0__["getPostMessageProxy"](getter.call(this));
+      }
+    )
 
-          //主页面与iframe中的初始化无关, 各自独立初始化
-          //init()
-          return contentWindowProxy;
-        }
-      )
+    _hook_js__WEBPACK_IMPORTED_MODULE_5__["prop"](msgEventProto, "source",
+      getter => function() {
+        return _env_js__WEBPACK_IMPORTED_MODULE_0__["getPostMessageProxy"](getter.call(this));
+      }
+    )
   }
 
   initCrossOrigin();
